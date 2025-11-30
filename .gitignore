@@ -1,0 +1,35 @@
+# Arquivos de configuração sensíveis
+config
+*.env
+*.env.local
+
+# Arquivos ZIP
+*.zip
+whaticket.zip
+
+# Arquivos temporários
+*.tmp
+*.log
+*.swp
+*~
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Arquivos de backup
+*.bak
+*.backup
+*~
+
+# Diretórios de cache
+.cache/
+node_modules/
+
+# Arquivos de IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
