@@ -1,194 +1,466 @@
 #!/bin/bash
-# ==========================================================
-# System functions for Whaticket installer
-# Execution model:
-# - devconnectai runs as normal user with sudo
-# - this file NEVER uses su or root shells
-# ==========================================================
+# 
+# system management
 
-set -euo pipefail
-
-DEPLOY_USER="deployautomatizaai"
-DEPLOY_HOME="/home/${DEPLOY_USER}"
-
-# ----------------------------------------------------------
-# SYSTEM UPDATE
-# ----------------------------------------------------------
-system_update() {
-  sudo apt update -y
-  sudo apt upgrade -y
-}
-
-# ----------------------------------------------------------
-# TIMEZONE
-# ----------------------------------------------------------
-system_set_timezone() {
-  sudo timedatectl set-timezone America/Sao_Paulo
-}
-
-# ----------------------------------------------------------
-# UFW
-# ----------------------------------------------------------
-system_set_ufw() {
-  sudo apt install -y ufw
-
-  sudo ufw allow 22
-  sudo ufw allow 80
-  sudo ufw allow 443
-  sudo ufw allow 3000
-  sudo ufw allow 3003
-  sudo ufw allow 6379
-  sudo ufw allow 5432
-
-  sudo ufw --force enable
-}
-
-# ----------------------------------------------------------
-# NODE + POSTGRES
-# ----------------------------------------------------------
-system_node_install() {
-  # Node.js 20
-  if ! command -v node >/dev/null; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-    sudo apt install -y nodejs
-  fi
-
-  sudo npm install -g npm@latest
-
-  # PostgreSQL 15
-  if ! command -v psql >/dev/null; then
-    sudo apt install -y curl ca-certificates gnupg lsb-release
-
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-      | sudo gpg --dearmor -o /usr/share/keyrings/postgres.gpg
-
-    echo \
-      "deb [signed-by=/usr/share/keyrings/postgres.gpg] \
-      http://apt.postgresql.org/pub/repos/apt \
-      $(lsb_release -cs)-pgdg main" \
-      | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-
-    sudo apt update
-    sudo apt install -y postgresql-15 postgresql-contrib
-    sudo systemctl enable postgresql
-    sudo systemctl start postgresql
-  fi
-}
-
-# ----------------------------------------------------------
-# PM2
-# ----------------------------------------------------------
-system_pm2_install() {
-  sudo npm install -g pm2
-
-  sudo -u "$DEPLOY_USER" pm2 startup systemd \
-    -u "$DEPLOY_USER" \
-    --hp "$DEPLOY_HOME"
-}
-
-# ----------------------------------------------------------
-# DOCKER
-# ----------------------------------------------------------
-system_docker_install() {
-  if command -v docker >/dev/null; then
-    return 0
-  fi
-
-  sudo apt install -y ca-certificates curl gnupg lsb-release
-
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | sudo gpg --dearmor -o /usr/share/keyrings/docker.gpg
-
-  echo \
-    "deb [arch=amd64 signed-by=/usr/share/keyrings/docker.gpg] \
-    https://download.docker.com/linux/ubuntu \
-    $(lsb_release -cs) stable" \
-    | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-
-  sudo apt update
-  sudo apt install -y docker-ce docker-ce-cli containerd.io
-
-  sudo systemctl enable docker
-  sudo systemctl start docker
-
-  sudo usermod -aG docker "$DEPLOY_USER"
-}
-
-# ----------------------------------------------------------
-# PUPPETEER DEPENDENCIES
-# ----------------------------------------------------------
-system_puppeteer_dependencies() {
-  sudo apt install -y \
-    libxshmfence-dev libgbm-dev wget unzip fontconfig locales \
-    gconf-service libasound2 libatk1.0-0 libc6 libcairo2 \
-    libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgcc1 \
-    libgconf-2-4 libgdk-pixbuf2.0-0 libglib2.0-0 libgtk-3-0 \
-    libnspr4 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 \
-    libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 \
-    libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
-    libxrender1 libxss1 libxtst6 ca-certificates \
-    fonts-liberation libappindicator1 libnss3 lsb-release xdg-utils
-}
-
-# ----------------------------------------------------------
-# SNAPD
-# ----------------------------------------------------------
-system_snapd_install() {
-  sudo apt install -y snapd
-}
-
-# ----------------------------------------------------------
-# NGINX
-# ----------------------------------------------------------
-system_nginx_install() {
-  sudo apt install -y nginx
-  sudo rm -f /etc/nginx/sites-enabled/default
-  sudo systemctl enable nginx
-  sudo systemctl start nginx
-}
-
-system_nginx_restart() {
-  sudo systemctl restart nginx
-}
-
-system_nginx_conf() {
-  sudo tee /etc/nginx/conf.d/whaticket.conf >/dev/null <<'EOF'
-client_max_body_size 20M;
-EOF
-}
-
-# ----------------------------------------------------------
-# DEPLOY USER
-# ----------------------------------------------------------
+#######################################
+# creates user
+# Arguments:
+#   None
+#######################################
 system_create_user() {
-  if ! id "$DEPLOY_USER" &>/dev/null; then
-    sudo useradd -m -s /bin/bash -G sudo "$DEPLOY_USER"
-    echo "$DEPLOY_USER:$deploy_password" | sudo chpasswd
+  print_banner
+  printf "${WHITE} 💻 Agora, vamos criar o usuário para deployautomatizaai...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+ 
+  sudo su - root <<EOF
+  useradd -m -p $(openssl passwd $deploy_password) -s /bin/bash -G sudo deployautomatizaai
+  usermod -aG sudo deployautomatizaai
+  mv "${PROJECT_ROOT}"/whaticket.zip /home/deployautomatizaai/
+EOF
+
+  sleep 2
+}
+
+#######################################
+# unzip whaticket
+# Arguments:
+#   None
+#######################################
+system_unzip_whaticket() {
+  print_banner
+  printf "${WHITE} 💻 Fazendo unzip whaticket...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  sudo su - deployautomatizaai <<EOF
+  unzip whaticket.zip
+EOF
+
+  sleep 2
+}
+
+#######################################
+# updates system
+# Arguments:
+#   None
+#######################################
+system_update() {
+  print_banner
+  printf "${WHITE} 💻 Vamos atualizar o sistema...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  sudo su - root <<EOF
+  apt -y update
+  sudo apt-get install -y libxshmfence-dev libgbm-dev wget unzip fontconfig locales gconf-service libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgcc1 libgconf-2-4 libgdk-pixbuf2.0-0 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 ca-certificates fonts-liberation libappindicator1 libnss3 lsb-release xdg-utils
+EOF
+
+  sleep 2
+}
+
+#######################################
+# installs node
+# Arguments:
+#   None
+#######################################
+system_node_install() {
+  print_banner
+  printf "${WHITE} 💻 Instalando o Node.js...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  sudo su - root <<EOF
+  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+  apt-get install -y nodejs
+  sleep 2
+  npm install -g npm@latest
+  sleep 2
+  
+  # Instalando PostgreSQL 15 (versão mais recente e estável)
+  sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+  wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+  sudo apt-get update -y && sudo apt-get -y install postgresql-15 postgresql-contrib-15
+  
+  # Iniciando e habilitando o PostgreSQL
+  sudo systemctl start postgresql
+  sudo systemctl enable postgresql
+  
+  sleep 2
+  sudo timedatectl set-timezone America/Sao_Paulo
+  sleep 2
+  
+  # Configurando senha mais segura e criando banco
+  sudo -u postgres psql -c "ALTER USER postgres PASSWORD '2000@23';"
+  sudo -u postgres psql -c "CREATE DATABASE whaticketautomatizaai;"
+  
+  # Instalando extensões úteis
+  sudo -u postgres psql -d whaticketautomatizaai -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;"
+  sudo -u postgres psql -d whaticketautomatizaai -c "CREATE EXTENSION IF NOT EXISTS uuid-ossp;"
+  
+  # Configurações básicas de performance
+  sudo -u postgres psql -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_stat_statements';"
+  sudo -u postgres psql -c "ALTER SYSTEM SET max_connections = 200;"
+  sudo -u postgres psql -c "ALTER SYSTEM SET shared_buffers = '256MB';"
+  sudo -u postgres psql -c "ALTER SYSTEM SET effective_cache_size = '1GB';"
+  sudo -u postgres psql -c "ALTER SYSTEM SET maintenance_work_mem = '64MB';"
+  sudo -u postgres psql -c "ALTER SYSTEM SET checkpoint_completion_target = 0.9;"
+  sudo -u postgres psql -c "ALTER SYSTEM SET wal_buffers = '16MB';"
+  sudo -u postgres psql -c "ALTER SYSTEM SET default_statistics_target = 100;"
+  
+  # Reiniciando PostgreSQL para aplicar configurações
+  sudo systemctl restart postgresql
+  
+  exit
+EOF
+
+  sleep 2
+}
+
+#######################################
+# installs docker
+# Arguments:
+#   None
+#######################################
+system_docker_install() {
+  print_banner
+  printf "${WHITE} 💻 Instalando docker...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  
+  if [ -f /etc/os-release ]; then
+    source /etc/os-release
+    if [ "$ID" = "ubuntu" ]; then
+      ubuntu_docker_install
+    elif [ "$ID" = "debian" ]; then
+      debian_docker_install
+    else
+      printf "${RED} ❌ Sistema operacional não suportado.${NC}"
+    fi
+  else
+    printf "${RED} ❌ Não é possível determinar o sistema operacional.${NC}"
   fi
+}
+
+ubuntu_docker_install() {
+  sudo su - root <<EOF
+  apt update
+  apt install -y apt-transport-https \
+                 ca-certificates curl \
+                 software-properties-common
+
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+  
+  add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu bionic stable"
+
+  apt update
+  apt install -y docker-ce
+EOF
+
+  sleep 2
+}
+
+debian_docker_install() {
+  sudo su - root <<EOF
+  apt update
+  apt install -y apt-transport-https \
+                 ca-certificates curl \
+                 gnupg lsb-release
+
+  curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+  
+  echo \
+    "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian \
+    \$(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  apt update
+  apt install -y docker-ce docker-ce-cli containerd.io
+EOF
+
+  sleep 2
+}
+#######################################
+# Ask for file location containing
+# multiple URL for streaming.
+# Globals:
+#   WHITE
+#   GRAY_LIGHT
+#   BATCH_DIR
+#   PROJECT_ROOT
+# Arguments:
+#   None
+#######################################
+system_puppeteer_dependencies() {
+  print_banner
+  printf "${WHITE} 💻 Instalando puppeteer dependencies...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  sudo su - root <<EOF
+  apt-get install -y libxshmfence-dev \
+                      libgbm-dev \
+                      wget \
+                      unzip \
+                      fontconfig \
+                      locales \
+                      gconf-service \
+                      libasound2 \
+                      libatk1.0-0 \
+                      libc6 \
+                      libcairo2 \
+                      libcups2 \
+                      libdbus-1-3 \
+                      libexpat1 \
+                      libfontconfig1 \
+                      libgcc1 \
+                      libgconf-2-4 \
+                      libgdk-pixbuf2.0-0 \
+                      libglib2.0-0 \
+                      libgtk-3-0 \
+                      libnspr4 \
+                      libpango-1.0-0 \
+                      libpangocairo-1.0-0 \
+                      libstdc++6 \
+                      libx11-6 \
+                      libx11-xcb1 \
+                      libxcb1 \
+                      libxcomposite1 \
+                      libxcursor1 \
+                      libxdamage1 \
+                      libxext6 \
+                      libxfixes3 \
+                      libxi6 \
+                      libxrandr2 \
+                      libxrender1 \
+                      libxss1 \
+                      libxtst6 \
+                      ca-certificates \
+                      fonts-liberation \
+                      libappindicator1 \
+                      libnss3 \
+                      lsb-release \
+                      xdg-utils
+EOF
+
+  sleep 2
+}
+
+#######################################
+# installs pm2
+# Arguments:
+#   None
+#######################################
+system_pm2_install() {
+  print_banner
+  printf "${WHITE} 💻 Instalando pm2...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  sudo su - root <<EOF
+  npm install -g pm2
+  pm2 startup ubuntu -u deployautomatizaai
+  env PATH=\$PATH:/usr/bin pm2 startup ubuntu -u deployautomatizaai --hp /home/deployautomatizaai
+EOF
+
+  sleep 2 
 }
 
 system_execute_comand() {
-  sudo apt install -y ffmpeg
+  print_banner
+  printf "${WHITE} 💻 Executando comandos...${GRAY_LIGHT}"
+  printf "\n\n"
 
-  sudo tee /etc/sudoers.d/$DEPLOY_USER >/dev/null <<EOF
-$DEPLOY_USER ALL=(ALL) NOPASSWD: ALL
+  sleep 2 
+
+  sudo su - root <<EOF
+  usermod -aG sudo deployautomatizaai
+  sudo apt install ffmpeg
+
+  grep -q "^deployautomatizaai ALL=(ALL) NOPASSWD: ALL$" /etc/sudoers || echo "deployautomatizaai ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+  echo "deployautomatizaai ALL=(ALL) NOPASSWD: ALL" | EDITOR='tee -a' visudo
+  sudo apt install ffmpeg
+
 EOF
 
-  sudo chmod 440 /etc/sudoers.d/$DEPLOY_USER
+  sleep 2 
 }
 
-# ----------------------------------------------------------
-# UNZIP PROJECT
-# ----------------------------------------------------------
-system_unzip_whaticket() {
-  local zip="${PROJECT_ROOT}/whaticket.zip"
 
-  if [[ -f "$zip" ]]; then
-    sudo mv "$zip" "$DEPLOY_HOME/"
-    sudo chown "$DEPLOY_USER:$DEPLOY_USER" "$DEPLOY_HOME/whaticket.zip"
+#######################################
+# set timezone
+# Arguments:
+#   None
+#######################################
+system_set_timezone() {
+  print_banner
+  printf "${WHITE} 💻 Instalando pm2...${GRAY_LIGHT}"
+  printf "\n\n"
 
-    sudo -u "$DEPLOY_USER" unzip -o \
-      "$DEPLOY_HOME/whaticket.zip" \
-      -d "$DEPLOY_HOME"
-  fi
+  sleep 2
+
+  sudo su - root <<EOF
+  timedatectl set-timezone America/Sao_Paulo
+EOF
+
+  sleep 2
+}
+
+
+#######################################
+# set ufw
+# Arguments:
+#   None
+#######################################
+system_set_ufw() {
+  print_banner
+  printf "${WHITE} 💻 Instalando pm2...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  sudo su - root <<EOF
+  ufw allow 80/tcp && ufw allow 22/tcp && ufw allow 443/tcp && ufw allow 8080/tcp && ufw allow 8081/tcp && ufw allow 3000/tcp && ufw allow 9005/tcp && ufw allow 3003/tcp && ufw allow 6379/tcp && ufw allow 5432/tcp && ufw allow 443/tcp && ufw allow 9090/tcp
+EOF
+
+  sleep 2
+}
+
+#######################################
+# installs snapd
+# Arguments:
+#   None
+#######################################
+system_snapd_install() {
+  print_banner
+  printf "${WHITE} 💻 Instalando snapd...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  sudo su - root <<EOF
+  apt install -y snapd
+  snap install core
+  snap refresh core
+EOF
+
+  sleep 2
+}
+
+#######################################
+# installs certbot
+# Arguments:
+#   None
+#######################################
+system_certbot_install() {
+  print_banner
+  printf "${WHITE} 💻 Instalando certbot...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  sudo su - root <<EOF
+  apt-get remove certbot
+  snap install --classic certbot
+  ln -s /snap/bin/certbot /usr/bin/certbot
+EOF
+
+  sleep 2
+}
+
+#######################################
+# installs nginx
+# Arguments:
+#   None
+#######################################
+system_nginx_install() {
+  print_banner
+  printf "${WHITE} 💻 Instalando nginx...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  sudo su - root <<EOF
+  apt install -y nginx
+  rm /etc/nginx/sites-enabled/default
+  sudo apt update
+EOF
+
+  sleep 2
+}
+
+#######################################
+# restarts nginx
+# Arguments:
+#   None
+#######################################
+system_nginx_restart() {
+  print_banner
+  printf "${WHITE} 💻 reiniciando nginx...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  sudo su - root <<EOF
+  service nginx restart
+EOF
+
+  sleep 2
+}
+
+#######################################
+# setup for nginx.conf
+# Arguments:
+#   None
+#######################################
+system_nginx_conf() {
+  print_banner
+  printf "${WHITE} 💻 configurando nginx...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+sudo su - root << EOF
+
+cat > /etc/nginx/conf.d/whaticket.conf << 'END'
+client_max_body_size 20M;
+END
+
+EOF
+
+  sleep 2
+}
+
+#######################################
+# installs nginx
+# Arguments:
+#   None
+#######################################
+system_certbot_setup() {
+  print_banner
+  printf "${WHITE} 💻 Configurando certbot...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  backend_domain=$(echo "${backend_url/https:\/\/}")
+  frontend_domain=$(echo "${frontend_url/https:\/\/}")
+
+  sudo su - root <<EOF
+  certbot -m $deploy_email \
+          --nginx \
+          --agree-tos \
+          --non-interactive \
+          --domains $backend_domain,$frontend_domain
+EOF
+
+  sleep 2
 }
