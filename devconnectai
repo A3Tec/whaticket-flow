@@ -1,355 +1,70 @@
 #!/bin/bash
 
-#######################################
-# Whaticket Deploy Orchestrator
-# Script principal que orquestra a instalação
-#######################################
+# reset shell colors 
+tput init
 
-set -euo pipefail  # Exit on error, undefined vars, pipe failures
-IFS=$'\n\t'        # Better word splitting
+# https://stackoverflow.com/questions/59895/how-to-get-the-source-directory-of-a-bash-script-from-within-the-script-itself
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do # resolve $SOURCE until the file is no longer a symlink
+  PROJECT_ROOT="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$PROJECT_ROOT/$SOURCE" # if $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+done
+PROJECT_ROOT="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
 
-#######################################
-# Cores e Reset do Terminal
-#######################################
-tput init 2>/dev/null || true
+# required imports
+source "${PROJECT_ROOT}"/variables/manifest.sh
+source "${PROJECT_ROOT}"/utils/manifest.sh
+source "${PROJECT_ROOT}"/lib/manifest.sh
 
-#######################################
-# Determina PROJECT_ROOT
-# Resolve symlinks corretamente
-# Ref: https://stackoverflow.com/questions/59895/
-#######################################
-get_project_root() {
-  local source="${BASH_SOURCE[0]}"
-  local project_root
-  
-  while [[ -h "$source" ]]; do
-    project_root="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
-    source="$(readlink "$source")"
-    [[ $source != /* ]] && source="$project_root/$source"
-  done
-  
-  project_root="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
-  echo "$project_root"
-}
-
-readonly PROJECT_ROOT="$(get_project_root)"
-readonly CONFIG_FILE="${PROJECT_ROOT}/config"
-readonly LOG_FILE="${PROJECT_ROOT}/install.log"
-
-#######################################
-# Logging Functions
-#######################################
-log() {
-  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
-}
-
-log_info() {
-  log "INFO: $*"
-  echo "ℹ️  $*"
-}
-
-log_success() {
-  log "SUCCESS: $*"
-  echo "✅ $*"
-}
-
-log_error() {
-  log "ERROR: $*"
-  echo "❌ ERROR: $*" >&2
-}
-
-log_step() {
-  log "STEP: $*"
-  echo ""
-  echo "🚀 $*"
-  echo "----------------------------------------"
-}
-
-#######################################
-# Error Handling
-#######################################
-error_exit() {
-  log_error "$1"
-  echo ""
-  echo "❌ Instalação falhou!"
-  echo "📋 Verifique o log: $LOG_FILE"
-  exit "${2:-1}"
-}
-
-cleanup_on_error() {
-  local exit_code=$?
-  if [[ $exit_code -ne 0 ]]; then
-    log_error "Script interrompido com código: $exit_code"
-    echo ""
-    echo "⚠️  Instalação não concluída"
-    echo "📋 Log disponível em: $LOG_FILE"
-  fi
-}
-
-trap cleanup_on_error EXIT
-trap 'error_exit "Instalação cancelada pelo usuário" 130' INT TERM
-
-#######################################
-# Validações de Pré-requisitos
-#######################################
-validate_environment() {
-  log_step "Validando ambiente"
-  
-  # Verifica se não está rodando como root
-  if [[ $EUID -eq 0 ]]; then
-    error_exit "❌ NÃO execute este script como root! Use um usuário normal com sudo."
-  fi
-  
-  # Verifica sudo
-  if ! sudo -n true 2>/dev/null; then
-    log_info "Solicitando privilégios sudo..."
-    sudo -v || error_exit "Falha ao obter privilégios sudo"
-  fi
-  
-  # Verifica sistema operacional
-  if [[ ! -f /etc/os-release ]]; then
-    error_exit "Sistema operacional não identificado"
-  fi
-  
-  source /etc/os-release
-  if [[ "$ID" != "ubuntu" && "$ID" != "debian" ]]; then
-    error_exit "Sistema operacional não suportado: $ID. Use Ubuntu ou Debian."
-  fi
-  
-  log_success "Ambiente validado: $PRETTY_NAME"
-}
-
-#######################################
-# Import de Módulos
-#######################################
-import_modules() {
-  log_step "Carregando módulos"
-  
-  local modules=(
-    "variables/manifest.sh"
-    "utils/manifest.sh"
-    "lib/manifest.sh"
-  )
-  
-  for module in "${modules[@]}"; do
-    local module_path="${PROJECT_ROOT}/${module}"
-    
-    if [[ ! -f "$module_path" ]]; then
-      error_exit "Módulo não encontrado: $module"
-    fi
-    
-    # shellcheck source=/dev/null
-    source "$module_path" || error_exit "Falha ao carregar: $module"
-    log_info "✓ Carregado: $module"
-  done
-  
-  log_success "Todos os módulos carregados"
-}
-
-#######################################
-# Configuração de Credenciais
-#######################################
-setup_config_file() {
-  log_step "Configurando credenciais"
-  
-  # Cria arquivo de config se não existir
-  if [[ ! -f "$CONFIG_FILE" ]]; then
-    log_info "Criando arquivo de configuração..."
-    
-    # Valida variáveis necessárias
-    if [[ -z "${deploy_password:-}" ]]; then
-      error_exit "Variável 'deploy_password' não definida"
-    fi
-    
-    if [[ -z "${db_pass:-}" ]]; then
-      error_exit "Variável 'db_pass' não definida"
-    fi
-    
-    # Cria arquivo de config
-    cat > "$CONFIG_FILE" <<EOF
-# Configurações de Deploy
-# Gerado em: $(date)
+# user configs file
+if [[ ! -e "${PROJECT_ROOT}"/config ]]; then
+  cat << EOF > "${PROJECT_ROOT}"/config
 deploy_password=${deploy_password}
-mysql_root_password=${mysql_root_password:-}
+mysql_root_password=${mysql_root_password}
 db_pass=${db_pass}
 EOF
-    
-    log_success "Arquivo de configuração criado"
-  else
-    log_info "Arquivo de configuração já existe"
-  fi
-  
-  # Protege arquivo com permissões restritas
-  sudo chown root:root "$CONFIG_FILE" || log_error "Falha ao alterar owner do config"
-  sudo chmod 600 "$CONFIG_FILE" || log_error "Falha ao alterar permissões do config"
-  
-  # Carrega configurações
-  # shellcheck source=/dev/null
-  source "$CONFIG_FILE" || error_exit "Falha ao carregar configurações"
-  
-  log_success "Configurações carregadas e protegidas"
-}
+fi
 
-#######################################
-# Execução de Etapa com Tratamento de Erro
-#######################################
-run_step() {
-  local step_name="$1"
-  local step_description="${2:-$step_name}"
-  
-  log_step "$step_description"
-  
-  if ! "$step_name"; then
-    error_exit "Falha na etapa: $step_description"
-  fi
-  
-  log_success "Concluído: $step_description"
-  sleep 1
-}
+# this file has passwords
+sudo su - root <<EOF
+chown root:root "${PROJECT_ROOT}"/config
+chmod 700 "${PROJECT_ROOT}"/config
+EOF
+source "${PROJECT_ROOT}"/config
+ 
+get_urls
+ 
+system_update
+system_set_timezone
+system_set_ufw
+system_node_install
+system_pm2_install
+system_docker_install
+system_puppeteer_dependencies
+system_snapd_install
+system_nginx_install
+system_certbot_install
 
-#######################################
-# Pipeline de Instalação do Sistema
-#######################################
-install_system_dependencies() {
-  log_step "INSTALANDO DEPENDÊNCIAS DO SISTEMA"
-  
-  run_step "system_update" "Atualizando sistema"
-  run_step "system_set_timezone" "Configurando timezone"
-  run_step "system_set_ufw" "Configurando firewall"
-  run_step "system_node_install" "Instalando Node.js e PostgreSQL"
-  run_step "system_pm2_install" "Instalando PM2"
-  run_step "system_docker_install" "Instalando Docker"
-  run_step "system_puppeteer_dependencies" "Instalando dependências Puppeteer"
-  run_step "system_snapd_install" "Instalando Snapd"
-  run_step "system_nginx_install" "Instalando Nginx"
-  
-  log_success "Dependências do sistema instaladas"
-}
-
-#######################################
-# Configuração de Usuário
-#######################################
-setup_deploy_user() {
-  log_step "CONFIGURANDO USUÁRIO DE DEPLOY"
-  
-  run_step "system_create_user" "Criando usuário deployautomatizaai"
-  run_step "system_execute_comand" "Configurando permissões"
-  run_step "system_unzip_whaticket" "Descompactando aplicação"
-  
-  log_success "Usuário configurado"
-}
-
-#######################################
-# Instalação do Backend
-#######################################
-install_backend() {
-  log_step "INSTALANDO BACKEND"
-  
-  run_step "backend_chrome_install" "Instalando Chrome/Chromium"
-  run_step "backend_set_env" "Configurando variáveis de ambiente"
-  run_step "backend_redis_create" "Criando container Redis"
-  run_step "backend_node_dependencies" "Instalando dependências Node.js"
-  run_step "backend_db_migrate" "Executando migrations"
-  run_step "backend_db_seed" "Executando seeds"
-  run_step "backend_start_pm2" "Iniciando backend com PM2"
-  run_step "backend_nginx_setup" "Configurando Nginx para backend"
-  
-  log_success "Backend instalado"
-}
-
-#######################################
-# Instalação do Frontend
-#######################################
-install_frontend() {
-  log_step "INSTALANDO FRONTEND"
-  
-  run_step "frontend_set_env" "Configurando variáveis de ambiente"
-  run_step "frontend_node_dependencies" "Instalando dependências Node.js"
-  run_step "frontend_start_pm2" "Iniciando frontend com PM2"
-  run_step "frontend_nginx_setup" "Configurando Nginx para frontend"
-  
-  log_success "Frontend instalado"
-}
-
-#######################################
-# Finalização
-#######################################
-finalize_installation() {
-  log_step "FINALIZANDO INSTALAÇÃO"
-  
-  run_step "system_nginx_conf" "Aplicando configurações Nginx"
-  run_step "system_nginx_restart" "Reiniciando Nginx"
-  
-  # Certbot (comentado por padrão)
-  # run_step "system_certbot_install" "Instalando Certbot"
-  # run_step "system_certbot_setup" "Configurando SSL"
-  
-  log_success "Instalação finalizada"
-}
-
-#######################################
-# Resumo da Instalação
-#######################################
-print_summary() {
-  echo ""
-  echo "========================================"
-  echo "✅ INSTALAÇÃO CONCLUÍDA COM SUCESSO!"
-  echo "========================================"
-  echo ""
-  echo "📋 Informações:"
-  echo "  • Frontend URL: ${frontend_url:-Não configurado}"
-  echo "  • Backend URL: ${backend_url:-Não configurado}"
-  echo "  • Usuário: deployautomatizaai"
-  echo ""
-  echo "📝 Próximos passos:"
-  echo "  1. Configure o DNS apontando para este servidor"
-  echo "  2. Execute o setup SSL (descomente system_certbot_setup)"
-  echo "  3. Acesse a aplicação pelo navegador"
-  echo ""
-  echo "📋 Log completo: $LOG_FILE"
-  echo "========================================"
-  echo ""
-}
-
-#######################################
-# Função Principal
-#######################################
-main() {
-  echo "========================================"
-  echo "🚀 Whaticket - Deploy Automatizado"
-  echo "========================================"
-  echo ""
-  
-  log "Iniciando instalação"
-  
-  # Validações iniciais
-  validate_environment
-  
-  # Carrega módulos
-  import_modules
-  
-  # Configura credenciais
-  setup_config_file
-  
-  # Obtém URLs
-  if declare -F get_urls >/dev/null; then
-    run_step "get_urls" "Configurando URLs"
-  fi
-  
-  # Pipeline de instalação
-  install_system_dependencies
-  setup_deploy_user
-  install_backend
-  install_frontend
-  finalize_installation
-  
-  # Resumo final
-  print_summary
-  
-  log "Instalação concluída com sucesso"
-}
-
-#######################################
-# Execução
-#######################################
-main "$@"
+ 
+system_create_user
+system_execute_comand
+ 
+system_unzip_whaticket
+backend_chrome_install
+backend_set_env
+backend_redis_create
+backend_node_dependencies
+backend_db_migrate
+backend_db_seed
+backend_start_pm2
+backend_nginx_setup
+ 
+frontend_set_env
+frontend_node_dependencies
+frontend_start_pm2
+frontend_nginx_setup
+ 
+system_nginx_conf
+system_nginx_restart
+system_certbot_setup
