@@ -8,6 +8,75 @@ readonly NODE_VERSION="20"
 readonly TIMEZONE="America/Sao_Paulo"
 
 #######################################
+# Verifica se Node.js e npm estão instalados
+# Returns:
+#   0 se instalado, 1 caso contrário
+#######################################
+check_node_npm() {
+  if ! command -v node &> /dev/null; then
+    printf "${RED} ❌ Node.js não está instalado!${NC}\n"
+    return 1
+  fi
+
+  if ! command -v npm &> /dev/null; then
+    printf "${RED} ❌ npm não está instalado!${NC}\n"
+    return 1
+  fi
+
+  return 0
+}
+
+#######################################
+# Recarrega ambiente para reconhecer Node/npm
+# Arguments:
+#   None
+#######################################
+reload_shell_env() {
+  export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+  hash -r 2>/dev/null || true
+}
+
+#######################################
+# Diagnóstico do ambiente Node.js
+# Arguments:
+#   None
+#######################################
+diagnose_node() {
+  printf "${WHITE} 🔍 Diagnóstico do Node.js:${NC}\n"
+  
+  printf "  - Verificando node: "
+  if command -v node &> /dev/null; then
+    printf "${GREEN}✓ $(node -v)${NC}\n"
+    printf "    Localização: $(which node)\n"
+  else
+    printf "${RED}✗ Não encontrado${NC}\n"
+  fi
+
+  printf "  - Verificando npm: "
+  if command -v npm &> /dev/null; then
+    printf "${GREEN}✓ $(npm -v)${NC}\n"
+    printf "    Localização: $(which npm)\n"
+  else
+    printf "${RED}✗ Não encontrado${NC}\n"
+  fi
+
+  printf "  - PATH atual: $PATH\n"
+  
+  printf "  - Verificando /usr/bin: "
+  if [[ -f /usr/bin/node ]]; then
+    printf "${GREEN}✓ node existe${NC}\n"
+  else
+    printf "${RED}✗ node não existe${NC}\n"
+  fi
+
+  if [[ -f /usr/bin/npm ]]; then
+    printf "${GREEN}✓ npm existe${NC}\n"
+  else
+    printf "${RED}✗ npm não existe${NC}\n"
+  fi
+}
+
+#######################################
 # Cria usuário do sistema
 # Globals:
 #   deploy_password
@@ -108,10 +177,42 @@ system_node_install() {
   printf "${WHITE} 💻 Instalando Node.js ${NODE_VERSION}...${GRAY_LIGHT}\n\n"
   sleep 2
 
+  # Remove versões antigas do Node.js
+  sudo apt-get remove -y nodejs npm 2>/dev/null || true
+
   # Instala Node.js
-  curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | sudo -E bash - || return 1
-  sudo apt-get install -y nodejs || return 1
-  sudo npm install -g npm@latest || return 1
+  curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | sudo -E bash - || {
+    printf "${RED} ❌ Erro ao adicionar repositório Node.js${NC}\n"
+    return 1
+  }
+  
+  sudo apt-get install -y nodejs || {
+    printf "${RED} ❌ Erro ao instalar Node.js${NC}\n"
+    return 1
+  }
+
+  # Verifica instalação
+  if ! command -v node &> /dev/null; then
+    printf "${RED} ❌ Node.js não foi instalado corretamente${NC}\n"
+    return 1
+  fi
+
+  if ! command -v npm &> /dev/null; then
+    printf "${RED} ❌ npm não foi instalado corretamente${NC}\n"
+    return 1
+  fi
+
+  printf "${GREEN} ✓ Node.js $(node -v) instalado${NC}\n"
+  printf "${GREEN} ✓ npm $(npm -v) instalado${NC}\n"
+
+  # Atualiza npm
+  sudo npm install -g npm@latest || {
+    printf "${YELLOW} ⚠️  Erro ao atualizar npm, continuando...${NC}\n"
+  }
+
+  # Cria link simbólico para garantir acesso
+  sudo ln -sf /usr/bin/node /usr/local/bin/node
+  sudo ln -sf /usr/bin/npm /usr/local/bin/npm
 
   printf "${WHITE} 💻 Instalando PostgreSQL ${POSTGRES_VERSION}...${GRAY_LIGHT}\n\n"
   
@@ -252,11 +353,33 @@ system_pm2_install() {
   printf "${WHITE} 💻 Instalando PM2...${GRAY_LIGHT}\n\n"
   sleep 2
 
-  sudo npm install -g pm2 || return 1
-  
-  sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u deployautomatizaai --hp /home/deployautomatizaai || {
-    printf "${RED} ❌ Erro ao configurar PM2 startup${NC}\n"
+  # Verifica se Node.js está instalado
+  if ! check_node_npm; then
+    printf "${RED} ❌ Node.js/npm não encontrado. Execute system_node_install primeiro.${NC}\n"
+    diagnose_node
     return 1
+  fi
+
+  # Recarrega ambiente
+  reload_shell_env
+
+  # Instala PM2
+  sudo npm install -g pm2 || {
+    printf "${RED} ❌ Erro ao instalar PM2${NC}\n"
+    return 1
+  }
+  
+  # Verifica se PM2 foi instalado
+  if ! command -v pm2 &> /dev/null; then
+    printf "${RED} ❌ PM2 não foi instalado corretamente${NC}\n"
+    return 1
+  fi
+
+  printf "${GREEN} ✓ PM2 $(pm2 -v) instalado${NC}\n"
+
+  # Configura PM2 startup
+  sudo env PATH=$PATH:/usr/bin:/usr/local/bin pm2 startup systemd -u deployautomatizaai --hp /home/deployautomatizaai || {
+    printf "${YELLOW} ⚠️  Erro ao configurar PM2 startup, mas PM2 está instalado${NC}\n"
   }
 
   sleep 2
